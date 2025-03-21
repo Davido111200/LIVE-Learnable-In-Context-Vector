@@ -122,8 +122,26 @@ class VQADataset(Dataset):
             query_item["image"],
             self.prompt_manager.gen_query_text_without_label(query_item),
         ]
+
+        answer_text = query_prompt[1].split("Short answer:")[1].replace(".","")
         return {
+            "prompt": query_x[1],
+            "image": query_item["image"],
+            "solution": answer_text,
             "ice_prompt": prompt,
             "query_prompt": query_prompt,
             "query_x": query_x,
         }
+
+    def map(self, func):
+            """
+            Applies a function to each item in the dataset and returns a new VQADataset instance.
+            """
+            mapped_data = [func(self[i]) for i in range(len(self))]
+            new_instance = VQADataset.__new__(VQADataset)  # Create a new instance without calling __init__
+            new_instance.query_ds = mapped_data
+            new_instance.select_ds = mapped_data  # Assuming selection applies to all
+            new_instance.few_shot_num = self.few_shot_num
+            new_instance.instruction = self.instruction
+            new_instance.prompt_manager = self.prompt_manager
+            return new_instance

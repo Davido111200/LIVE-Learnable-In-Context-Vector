@@ -13,7 +13,7 @@ from .icv_encoder.global_lora_encoder import GlobalICVEncoderOuter
 from .icv_model.icv_intervention import LearnableICVInterventionLMM
 
 
-class VQAICVModule(pl.LightningModule):
+class VQAICVModuleOuter(pl.LightningModule):
     def __init__(
         self,
         interface: LMMInterface,
@@ -25,8 +25,11 @@ class VQAICVModule(pl.LightningModule):
         self.module_cfg = module_cfg
         self.lmm_cfg = lmm_cfg
         self.interface = interface
+        self.config = interface.model.config
+        self.warnings_issued = {}  # Add this line to prevent the errors
+        self.add_model_tags = {}
 
-        self.interface.requires_grad_(False)
+        # self.interface.requires_grad_(False)
         if hasattr(self.interface.model, "gradient_checkpointing_enable"):
             self.interface.model.gradient_checkpointing_enable()
 
@@ -37,18 +40,16 @@ class VQAICVModule(pl.LightningModule):
             layer_format=self.lmm_cfg.layer_format,
             total_layers=self.lmm_cfg.total_layers,
         )
-        # NOTE: Change the model in config/icv_module/icv_module.yaml
+        
         icv_encoder_factor: GlobalICVEncoderOuter = hydra.utils.instantiate(
             module_cfg.icv_encoder, _partial_=True
         )
         icv_layer_num = len(self.icv_model.intervention_layer_names)
         hidden_dim = self.lmm_cfg.hidden_size
-        # self.icv_encoder = icv_encoder_factor(
-        #     lmm_hidden_dim=hidden_dim, lmm_layers=icv_layer_num
-        # )
         self.icv_encoder = icv_encoder_factor(
             n_layers=icv_layer_num, hidden_dim=hidden_dim
         )
+
         self.temperature = torch.nn.Parameter(
             torch.tensor(self.module_cfg.init_temperature),
             requires_grad=module_cfg.learnable_t,
@@ -77,7 +78,7 @@ class VQAICVModule(pl.LightningModule):
         inputs,
         query_x_length,
         in_context_length,
-    ) -> torch.Any:
+    ):
         """
         in_context_input: shot_num1 + ... + shot_num_n, seq_len
         ice_shot_num: bs, 1
@@ -93,11 +94,16 @@ class VQAICVModule(pl.LightningModule):
             icv_encoder_output.alpha.unsqueeze(dim=-1)
             * icv_encoder_output.in_context_vector
         )
-        # print("ICV: ", icv)
 
         if self.module_cfg.hard_loss_weight:
             query_inputs["labels"] = query_inputs["input_ids"]
-
+        # decode the labels
+        text_labels = self.interface.tokenizer.batch_decode(
+            query_inputs["labels"], skip_special_tokens=True
+        )
+        text_inputs = self.interface.tokenizer.batch_decode(
+            query_inputs["input_ids"], skip_special_tokens=True
+        )
         self.icv_model.toggle_intervention(True)
         icv_outputs = self.icv_model(**query_inputs, icv=icv)
 

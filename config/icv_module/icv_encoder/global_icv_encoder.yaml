@@ -1,4 +1,5 @@
-_target_: icv_src.icv_encoder.global_icv_encoder.GlobalICVEncoder
+# _target_: icv_src.icv_encoder.global_icv_encoder.GlobalICVEncoder
+_target_: icv_src.icv_encoder.global_lora_encoder.GlobalICVEncoderOuter
 
 use_sigmoid: True
 alpha_learnable: True

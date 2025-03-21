@@ -13,7 +13,7 @@ class GlobalICVEncoder(BaseICVEncoder):
     ) -> None:
         """
         Initializes the GlobalICVEncoder object.
-
+        
         Args:
             lmm_hidden_dim (int): The hidden dimension of the LMM layers.
             lmm_layers (int): The number of LMM layers.

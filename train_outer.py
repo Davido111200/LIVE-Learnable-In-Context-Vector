@@ -20,11 +20,11 @@ from pytorch_lightning.utilities.deepspeed import (
 )
 
 from icv_src.icv_datamodule import VQAICVDataModule
-from icv_src.icv_module import VQAICVModule
+from icv_src.icv_module_outer import VQAICVModuleOuter
 from utils import get_icv_cpk_path, init_interface
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
-
+from transformers import TrainerCallback
 class GradientLoggingCallback(pl.Callback):
     def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx=None):
         print(f"Batch {batch_idx} Gradient Logging")
@@ -36,6 +36,7 @@ class GradientLoggingCallback(pl.Callback):
                     grad_norm = param.grad.data.norm(2).item()
                     print(f"{name}: grad norm = {grad_norm:.4f}")
         print("+++++")
+
 
 
 @hydra.main(config_path="config", config_name="train.yaml")
@@ -60,7 +61,7 @@ def main(cfg: DictConfig):
     wb_logger = WandbLogger(
         save_dir=cfg.result_dir,
         name=cfg.run_name,
-        project="VQAInContextVector",
+        project="VQAInContextVectorOuter",
         log_model=False,
     )
     wb_logger.log_hyperparams(dict(cfg))
@@ -69,7 +70,7 @@ def main(cfg: DictConfig):
         callbacks=[
             LearningRateMonitor(),
             RichModelSummary(max_depth=2),
-            RichProgressBar(),
+            # RichProgressBar(),
             GradientLoggingCallback(),
         ],
         **cfg.trainer,
@@ -77,7 +78,7 @@ def main(cfg: DictConfig):
     )
     prompt_manager, interface, processor = init_interface(cfg)
 
-    model = VQAICVModule(
+    model = VQAICVModuleOuter(
         interface=interface, module_cfg=cfg.icv_module, lmm_cfg=cfg.lmm
     )
     data_module = VQAICVDataModule(
@@ -88,14 +89,16 @@ def main(cfg: DictConfig):
         model,
         data_module,
     )
-    trainer.save_checkpoint(
-        filepath=os.path.join(
-            save_path,
-            "last.ckpt",
-        ),
-        weights_only=True,
-    )
-    postprocess(cfg, save_path)
+    # trainer.save_checkpoint(
+    #     filepath=os.path.join(
+    #         save_path,
+    #         "last.ckpt",
+    #     ),
+    #     weights_only=True,
+    # )
+    # print("SAVED MODEL")
+    # postprocess(cfg, save_path)
+
 
 
 @rank_zero_only

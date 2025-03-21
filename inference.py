@@ -80,7 +80,7 @@ def main(cfg: DictConfig):
         logger.info(f"{metric_file_path} exists. LOADING...")
     elif not cfg.re_eval:
         logger.info(f"{metric_file_path} exists, EXIT...")
-        return
+        # return
 
     icv = None
     alpha = None
@@ -93,8 +93,17 @@ def main(cfg: DictConfig):
             run_name=cfg.run_name,
         )
         icv_cpk = torch.load(model_cpk_dir / "icv_cpk.pth")
-        icv = icv_cpk["icv_encoder.icv"].to(cfg.device)
-        alpha = icv_cpk["icv_encoder.alpha"].to(cfg.device)
+        
+        # icv = icv_cpk["icv_encoder.icv"].to(cfg.device)
+        # alpha = icv_cpk["icv_encoder.alpha"].to(cfg.device)
+
+        vector1 = icv_cpk["icv_encoder.vector1"]
+        vector2 = icv_cpk["icv_encoder.vector2"]
+
+        # outer product of two vectors
+        icv = vector1 * vector2
+        icv_cpk["icv_encoder.icv"] = icv
+
         lmm_args = dict(icv_cpk["lmm_args"])
         if icv_cpk.get("use_sigmoid", None):
             alpha = torch.sigmoid(alpha)
@@ -277,6 +286,9 @@ def icv_inference(
         query_inputs = processor.prepare_input(prompts)
         query_inputs = {k: v.to(icv_model.lmm.device) for k, v in query_inputs.items()}
 
+        print(query_inputs)
+        quit()
+
         generated = generate_answers(
             inputs=query_inputs,
             model=icv_model,
@@ -306,7 +318,7 @@ def generate_answers(
     in_context_vector=None,
     alpha=None,
 ):
-    icv = None
+    icv = in_context_vector
     if in_context_vector is not None:
         icv = alpha.unsqueeze(dim=-1) * in_context_vector
 
@@ -376,6 +388,50 @@ def icl_inference(
             index += 1
 
     return results_dict
+
+
+@torch.inference_mode()
+def generate_answers_fixed_alpha(
+    inputs,
+    query_inputs,
+    model,
+    processor,
+    # generate_kwargs,
+    total_layers,
+    hidden_size,
+    query_x_length,
+    in_context_vector=None,
+    interface=None
+):
+    icv = in_context_vector
+    model = model.cuda()
+    generated_out = model.generate(**inputs, max_new_tokens=10, icv=icv)
+    prompt_len = int(inputs["attention_mask"].shape[1])
+    outputs = generated_out.tolist()
+
+    generated = processor.tokenizer.batch_decode(
+        [output[prompt_len:] for output in outputs],
+        skip_special_tokens=True,
+    )
+    rl_mask = get_mask(query_inputs, query_x_length, interface)
+    rl_logit = model(**query_inputs, icv=icv)["logits"]
+    return generated, torch.tensor(rl_logit, device="cuda"), torch.tensor(rl_mask, device="cuda")
+
+
+def get_mask(inputs, mask_length, interface):
+    mask_shape = inputs[interface.input_ids_field_name].shape
+    bs, seq_len = mask_shape
+    device = inputs[interface.input_ids_field_name].device
+    sequence_indices = (
+        torch.arange(seq_len, device=device).unsqueeze(0).expand(bs, -1)
+    )
+    mask = sequence_indices >= mask_length.unsqueeze(dim=1)
+    mask[
+        inputs[interface.input_ids_field_name]
+        == interface.tokenizer.pad_token_id
+    ] = False
+    return mask
+
 
 
 if __name__ == "__main__":

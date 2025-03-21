@@ -1,3 +1,4 @@
+import torch
 import re
 from contextlib import nullcontext
 from typing import List, Union
@@ -63,7 +64,7 @@ class LearnableICVInterventionLMM(nn.Module):
             layer_idx = int(re.findall(r"\d+", layer_name)[0])
             if layer_name in edit_layers and isinstance(output, tuple):
                 hidden_states, *rest = output
-                shift = icv[:, self.layer_to_icv_index[layer_idx]].unsqueeze(dim=1)
+                shift = icv[:, self.layer_to_icv_index[layer_idx]].unsqueeze(dim=1).to(self.device)
                 shifted_states = hidden_states + shift
                 normalized_states = (
                     shifted_states
@@ -97,7 +98,7 @@ class LearnableICVInterventionLMM(nn.Module):
             )
         return nullcontext()
 
-    def forward(self, icv=None, *args, **kwargs):
+    def forward(self, retain_grad=False, is_ref=False, icv=None, *args, **kwargs):
         """
         Forward pass of the model with optional ICV intervention.
 
@@ -109,8 +110,13 @@ class LearnableICVInterventionLMM(nn.Module):
         Returns:
             The output of the model's forward pass.
         """
-        with self._get_context_manager(icv, retain_grad=True):
-            return self.lmm(*args, **kwargs)
+
+        if not is_ref:
+            with self._get_context_manager(icv, retain_grad=True):
+                return self.lmm(*args, **kwargs)
+        else:
+            with self._get_context_manager(icv, retain_grad=False):
+                return self.lmm(*args, **kwargs)
 
     def generate(self, icv=None, *args, **kwargs):
         """

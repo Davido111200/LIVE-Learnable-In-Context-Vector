@@ -410,11 +410,13 @@ class VQAEval:
             resAns = resAns.replace("\n", " ")
             resAns = resAns.replace("\t", " ")
             resAns = resAns.strip()
+            resAns = self.processJunction(resAns)
             resAns = self.processPunctuation(resAns)
             resAns = self.processDigitArticle(resAns)
             gtAcc = []
 
             for ansDic in gts[quesId]["answers"]:
+                ansDic["answer"] = self.processJunction(ansDic["answer"])
                 ansDic["answer"] = self.processPunctuation(ansDic["answer"])
                 ansDic["answer"] = self.processDigitArticle(ansDic["answer"])
 
@@ -446,6 +448,9 @@ class VQAEval:
 
         self.setAccuracy(accQA, accQuesType, accAnsType)
         print("Done computing accuracy")
+
+    def processJunction(self, inText):
+        return re.split(r"(?i)\blong answer[:\b]", inText)[0].strip()
 
     def processPunctuation(self, inText):
         outText = inText

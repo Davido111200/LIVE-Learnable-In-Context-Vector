@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from utils_idefics import IdeficsInterface
 from icv_src.icv_datasets.vqa_dataset import load_okvqa_ds, load_vqav2_ds
 from icv_src.icv_datasets.caption_dataset import load_coco_ds
 from icv_src.metrics import (
@@ -8,7 +9,6 @@ from icv_src.metrics import (
 )
 from lmm_icl_interface import (
     Idefics2Interface,
-    IdeficsInterface,
     LMMPromptManager,
     OpenFlamingoInterface,
 )
@@ -41,6 +41,35 @@ def init_interface(cfg):
         interface = IdeficsInterface(
             model_name_or_path=model_cpk_dir / cfg.lmm.model_name,
             precision=cfg.lmm.precision,
+            model_device=cfg.lmm.device,
+            prompt_manager=prompt_manager,
+            instruction=cfg.prompt.instruction,
+            image_field=cfg.prompt.image_field,
+            label_field=cfg.prompt.label_filed,
+        )
+        processor = interface.processor
+
+    elif "openflamingo" in cfg.lmm.name.lower():
+        interface = OpenFlamingoInterface(
+            lang_encoder_path=model_cpk_dir / cfg.lmm.lang_encoder_path,
+            tokenizer_path=model_cpk_dir / cfg.lmm.tokenizer_path,
+            flamingo_checkpoint_dir=model_cpk_dir / cfg.lmm.hf_root,
+            cross_attn_every_n_layers=cfg.lmm.cross_attn_every_n_layers,
+            hf_root=cfg.lmm.hf_root,
+            precision=cfg.lmm.precision,
+            device=cfg.lmm.device,
+            prompt_manager=prompt_manager,
+            instruction=cfg.prompt.instruction,
+            image_field=cfg.prompt.image_field,
+            label_field=cfg.prompt.label_filed,
+            load_from_local=True,
+            init_device=cfg.lmm.init_device,
+        )
+        processor = interface.processor
+    elif cfg.lmm.name == "idefics2-8b-base":
+        interface = Idefics2Interface(
+            model_name_or_path=model_cpk_dir / cfg.lmm.model_name,
+            precision=cfg.lmm.precision,
             device=cfg.lmm.device,
             prompt_manager=prompt_manager,
             instruction=cfg.prompt.instruction,
@@ -48,6 +77,32 @@ def init_interface(cfg):
             label_field=cfg.prompt.label_filed,
         )
         processor = interface.processor
+
+    return prompt_manager, interface, processor
+
+
+def init_interface_new(cfg):
+    model_cpk_dir = Path(cfg.model_cpk_dir)
+    prompt_manager = LMMPromptManager(
+        cfg.prompt.prompt_template,
+        cfg.prompt.column_token_map,
+        label_field=cfg.prompt.label_filed,
+        sep_token=cfg.prompt.sep_token,
+        query_prompt_template=cfg.prompt.query_prompt_template,
+    )
+    if cfg.lmm.name == "idefics-9b":
+        interface = IdeficsInterface(
+            model_name_or_path=model_cpk_dir / cfg.lmm.model_name,
+            precision=cfg.lmm.precision,
+            model_device=cfg.lmm.device,
+            prompt_manager=prompt_manager,
+            instruction=cfg.prompt.instruction,
+            image_field=cfg.prompt.image_field,
+            label_field=cfg.prompt.label_filed,
+        )
+        # redefine the processor class here to match 4.37.0 transformers
+        processor = interface.processor
+
     elif "openflamingo" in cfg.lmm.name.lower():
         interface = OpenFlamingoInterface(
             lang_encoder_path=model_cpk_dir / cfg.lmm.lang_encoder_path,
@@ -131,3 +186,4 @@ def ok_vq_postprocess(text, model_name):
         return postprocess_ok_vqa_generation(text).strip()
     elif "idefics" in model_name:
         return postprocess_ok_vqa_generation(text).replace("\n", "").strip()
+

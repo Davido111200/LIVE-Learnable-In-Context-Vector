@@ -3,7 +3,10 @@ defaults:
   - data_cfg: icv_data
   - lmm: idefics-9B
   - prompt: ${lmm}_${data_cfg/task}
+  - icv_module: icv_module
 
+
+seed: 426
 
 
 test_icv: True
@@ -29,7 +32,7 @@ generate_kwargs:
   length_penalty: 0.0
   min_new_tokens: 0
 
-
+grpo: False
 
 hydra:
   run:
