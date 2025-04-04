@@ -19,6 +19,8 @@ class VQAICVModuleOuter(pl.LightningModule):
         interface: LMMInterface,
         module_cfg,
         lmm_cfg,
+        load_from_coldstart,
+        rank
     ) -> None:
         super().__init__()
         self.save_hyperparameters(ignore=["interface"])
@@ -42,7 +44,7 @@ class VQAICVModuleOuter(pl.LightningModule):
         )
         
         icv_encoder_factor: GlobalICVEncoderOuter = hydra.utils.instantiate(
-            module_cfg.icv_encoder, _partial_=True
+            module_cfg.icv_encoder, _partial_=True, load_from_coldstart=load_from_coldstart
         )
         icv_layer_num = len(self.icv_model.intervention_layer_names)
         hidden_dim = self.lmm_cfg.hidden_size
@@ -94,16 +96,9 @@ class VQAICVModuleOuter(pl.LightningModule):
             icv_encoder_output.alpha.unsqueeze(dim=-1)
             * icv_encoder_output.in_context_vector
         )
-
+        
         if self.module_cfg.hard_loss_weight:
             query_inputs["labels"] = query_inputs["input_ids"]
-        # decode the labels
-        text_labels = self.interface.tokenizer.batch_decode(
-            query_inputs["labels"], skip_special_tokens=True
-        )
-        text_inputs = self.interface.tokenizer.batch_decode(
-            query_inputs["input_ids"], skip_special_tokens=True
-        )
         self.icv_model.toggle_intervention(True)
         icv_outputs = self.icv_model(**query_inputs, icv=icv)
 
@@ -217,7 +212,7 @@ class VQAICVModuleOuter(pl.LightningModule):
             "optimizer": optimizer,
             "lr_scheduler": {"scheduler": scheduler, "interval": "step"},
         }
-
+    
     def on_save_checkpoint(self, checkpoint):
         # Only save the icv weights
         params_name = list(checkpoint["state_dict"].keys())

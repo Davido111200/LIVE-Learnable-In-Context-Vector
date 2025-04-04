@@ -110,14 +110,9 @@ class LearnableICVInterventionLMM(nn.Module):
         Returns:
             The output of the model's forward pass.
         """
-
-        if not is_ref:
-            with self._get_context_manager(icv, retain_grad=True):
-                return self.lmm(*args, **kwargs)
-        else:
-            with self._get_context_manager(icv, retain_grad=False):
-                return self.lmm(*args, **kwargs)
-
+        with self._get_context_manager(icv, retain_grad=True):
+            return self.lmm(*args, **kwargs)
+    
     def generate(self, icv=None, *args, **kwargs):
         """
         Generate output using the specified ICV model with optional ICV intervention.

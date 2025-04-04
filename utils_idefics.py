@@ -671,6 +671,9 @@ class IdeficsPromptProcessor(LMMPromptProcessor):
             debug,
             return_tensors,
         )
+    
+    def save_pretrained(self, save_directory):
+        self.processor.save_pretrained(save_directory)
 
 
 class IdeficsInterface(LMMInterface):

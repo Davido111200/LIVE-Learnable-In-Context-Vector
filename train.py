@@ -70,7 +70,6 @@ def main(cfg: DictConfig):
             LearningRateMonitor(),
             RichModelSummary(max_depth=2),
             RichProgressBar(),
-            GradientLoggingCallback(),
         ],
         **cfg.trainer,
         enable_checkpointing=False,

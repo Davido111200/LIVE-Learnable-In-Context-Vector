@@ -9,7 +9,7 @@ class GlobalICVEncoderOuter(BaseICVEncoder):
         alpha_learnable=True,
         alpha_init_value=0.0,
         use_sigmoid=False,
-        load_from_coldstart=True,
+        load_from_coldstart=False,
         icv_cpk=None,
     ) -> None:
         """
@@ -34,19 +34,15 @@ class GlobalICVEncoderOuter(BaseICVEncoder):
         """
         super().__init__()
 
-
-
-
-        # Define the two “networks” as learned parameters.
         if load_from_coldstart:
             self.vector1 = torch.nn.Parameter(icv_cpk["icv_encoder.vector1"])
             self.vector2 = torch.nn.Parameter(icv_cpk["icv_encoder.vector2"])
             self.alpha = torch.nn.Parameter(icv_cpk["icv_encoder.alpha"], requires_grad=alpha_learnable)
         else:
             # vector1: will be broadcast to (B, n_layers, 1)
-            self.vector1 = torch.nn.Parameter(torch.empty(1, n_layers, 1))
+            self.vector1 = torch.nn.Parameter(torch.empty(1, n_layers, 8))
             # vector2: will be broadcast to (B, 1, hidden_dim)
-            self.vector2 = torch.nn.Parameter(torch.empty(1, 1, hidden_dim))
+            self.vector2 = torch.nn.Parameter(torch.empty(1, 8, hidden_dim))
 
             # Alpha parameter (kept for potential use in other parts of the system).
             self.alpha = torch.nn.Parameter(
@@ -54,9 +50,9 @@ class GlobalICVEncoderOuter(BaseICVEncoder):
                 requires_grad=alpha_learnable,
             )
 
-        # Initialize both so that each element ~ N(0, 0.1^2)
-        torch.nn.init.normal_(self.vector1, mean=0.0, std=0.01)
-        torch.nn.init.normal_(self.vector2, mean=0.0, std=0.01)
+            # Initialize both so that each element ~ N(0, 0.1^2)
+            torch.nn.init.normal_(self.vector1, mean=0.0, std=0.001)
+            torch.nn.init.normal_(self.vector2, mean=0.0, std=0.001)
 
         self.use_sigmoid = use_sigmoid
 
@@ -79,8 +75,7 @@ class GlobalICVEncoderOuter(BaseICVEncoder):
         vec2 = self.vector2.expand(batch_size, -1, -1)   # Shape: (B, 1, hidden_dim)
         
         # Compute the outer product: broadcast multiplication results in shape (B, n_layers, hidden_dim)
-        icv_matrix = vec1 * vec2
-
+        icv_matrix = vec1 @ vec2
         return ICVEncoderOutput(
             in_context_vector=icv_matrix,
             alpha=self.get_alpha(),

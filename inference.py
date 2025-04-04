@@ -92,28 +92,34 @@ def main(cfg: DictConfig):
             dataset_name=cfg.data_cfg.task.datasets.name,
             run_name=cfg.run_name,
         )
-        icv_cpk = torch.load(model_cpk_dir / "icv_cpk.pth")
-        
-        # icv = icv_cpk["icv_encoder.icv"].to(cfg.device)
-        # alpha = icv_cpk["icv_encoder.alpha"].to(cfg.device)
 
-        vector1 = icv_cpk["icv_encoder.vector1"]
-        vector2 = icv_cpk["icv_encoder.vector2"]
+        # NOTE: CHECKPOINT SHOULD BE MODDED HERE
+        # icv_cpk = torch.load(model_cpk_dir / "icv_cpk.pth")
+        # icv_cpk = torch.load("/home/s223540177/LIVE-Learnable-In-Context-Vector/results/model_cpk/vqav2/idefics-9b/vqav2_idefics_icv/icv_cpk.pth")
+        icv_cpk = torch.load("/scratch/s223540177/LIVE/results/icv_cpk_grpo/icv_cpk.bin")
+
+        icv = icv_cpk["icv_encoder.icv"].to(cfg.device)
+        alpha = icv_cpk["icv_encoder.alpha"].to(cfg.device)
+
+        print("Icv:", icv)
+        quit()
+
+        # vector1 = icv_cpk["icv_encoder.vector1"]
+        # vector2 = icv_cpk["icv_encoder.vector2"]
+        # alpha = icv_cpk["icv_encoder.alpha"]
 
         # outer product of two vectors
-        icv = vector1 * vector2
-        icv_cpk["icv_encoder.icv"] = icv
+        icv = vector1 @ vector2
 
-        lmm_args = dict(icv_cpk["lmm_args"])
         if icv_cpk.get("use_sigmoid", None):
             alpha = torch.sigmoid(alpha)
         logger.info("ICV loaded")
         icv_model = LearnableICVInterventionLMM(
             interface,
             enable_intervention=True,
-            intervention_layer=lmm_args["intervention_layer"],
-            layer_format=lmm_args["layer_format"],
-            total_layers=lmm_args["total_layers"],
+            intervention_layer=cfg.lmm["intervention_layer"],
+            layer_format=cfg.lmm["layer_format"],
+            total_layers=cfg.lmm["total_layers"],
         )
     else:
         icv_model = LearnableICVInterventionLMM(interface, enable_intervention=False)
@@ -286,9 +292,6 @@ def icv_inference(
         query_inputs = processor.prepare_input(prompts)
         query_inputs = {k: v.to(icv_model.lmm.device) for k, v in query_inputs.items()}
 
-        print(query_inputs)
-        quit()
-
         generated = generate_answers(
             inputs=query_inputs,
             model=icv_model,
@@ -318,7 +321,6 @@ def generate_answers(
     in_context_vector=None,
     alpha=None,
 ):
-    icv = in_context_vector
     if in_context_vector is not None:
         icv = alpha.unsqueeze(dim=-1) * in_context_vector
 

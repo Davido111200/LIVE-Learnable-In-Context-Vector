@@ -3,6 +3,7 @@ import shutil
 import re
 from pathlib import Path
 
+import copy
 import hydra
 import pytorch_lightning as pl
 import torch
@@ -20,6 +21,7 @@ from pytorch_lightning.callbacks import (
     RichModelSummary,
     RichProgressBar,
 )
+import math
 from lmm_icl_interface import LMMInterface
 
 from deepspeed.ops.adam import DeepSpeedCPUAdam
@@ -29,10 +31,12 @@ from pytorch_lightning.utilities.deepspeed import (
     convert_zero_checkpoint_to_fp32_state_dict,
 )
 
+from safetensors.torch import load_model, save_model
+
 from agent_ppoLoRA.rldataloader import VQAICVRLDataModule
-from icv_src.icv_module_outer import VQAICVModuleOuter
+from icv_src.icv_module import VQAICVModule
 from icv_src.icv_model.icv_intervention import LearnableICVInterventionLMM
-from icv_src.icv_encoder.global_lora_encoder import GlobalICVEncoderOuter
+from icv_src.icv_encoder.global_icv_encoder import GlobalICVEncoder
 
 
 from utils import get_icv_cpk_path, init_interface
@@ -72,6 +76,7 @@ class VILMWithSteering(nn.Module):
             layer_format=cfg.lmm.layer_format,
             total_layers=cfg.lmm.total_layers,
         )
+        self.cfg = cfg
         self.module_cfg = module_cfg
         self.lmm_cfg = lmm_cfg 
         self.num_intervention_layers = num_intervention_layers
@@ -82,19 +87,31 @@ class VILMWithSteering(nn.Module):
 
         self.icv_cpk = icv_cpk
 
-        icv_encoder_factor: GlobalICVEncoderOuter = hydra.utils.instantiate(
+        icv_encoder_factor: GlobalICVEncoder = hydra.utils.instantiate(
             module_cfg.icv_encoder, _partial_=True, icv_cpk=icv_cpk
         )
         icv_layer_num = len(self.model.intervention_layer_names)
         hidden_dim = self.lmm_cfg.hidden_size
         self.icv_encoder = icv_encoder_factor(
-            n_layers=icv_layer_num, hidden_dim=hidden_dim
+            hidden_dim=hidden_dim, n_layers=icv_layer_num
         )
+        # freeze all but the elements of icv_encoder
+        for name, param in self.icv_encoder.named_parameters():
+            if "alpha" in name:
+                param.requires_grad = True
+            elif "vector" in name:
+                param.requires_grad = True
+            else:
+                param.requires_grad = False
 
         if hasattr(self.model, "gradient_checkpointing_enable"):
             self.model.gradient_checkpointing_enable()
 
         # # check which module requires grad
+        for name, param in self.named_parameters():
+            if param.requires_grad:
+                print("Param: ", name)
+
                 
     def forward(self, input_ids, attention_mask, pixel_values, image_attention_mask, labels, is_ref, generation_config=None):
         if not is_ref:
@@ -134,20 +151,30 @@ class VILMWithSteering(nn.Module):
                 print("Param requires grad: ", name)
                 params.append({"params": param})
 
-        if "deepspeed" in self.module_cfg.strategy:
-            optimizer = DeepSpeedCPUAdam(
-                params,
-                lr=self.module_cfg.icv_lr,
-                weight_decay=self.module_cfg.weight_decay,
-            )
-        else:
-            optimizer = optim.AdamW(
-                params,
-                lr=self.module_cfg.icv_lr,
-                weight_decay=self.module_cfg.weight_decay,
-            )
+        # NOTE: uncomment this for original code
+        # if "deepspeed" in self.module_cfg.strategy:
+        #     print("DEEPSPEED CALLED")
+        #     optimizer = DeepSpeedCPUAdam(
+        #         params,
+        #         lr=self.module_cfg.icv_lr,
+        #         weight_decay=self.module_cfg.weight_decay,
+        #     )
+        # else:
+        #     print("DEEPSPEED NOT CALLED")
+        #     optimizer = optim.AdamW(
+        #         params,
+        #         lr=self.module_cfg.icv_lr,
+        #         weight_decay=self.module_cfg.weight_decay,
+        #     )
+        
+        optimizer = optim.AdamW(
+            params, 
+            lr=self.module_cfg.icv_lr,
+            weight_decay=self.module_cfg.weight_decay,
+        )
 
-        step_batches = self.trainer.estimated_stepping_batches
+        # step_batches = self.trainer.estimated_stepping_batches
+        step_batches = self.cfg.nepochs
         if isinstance(self.module_cfg.warm_steps, float):
             warm_steps = self.module_cfg.warm_steps * step_batches
         elif isinstance(self.module_cfg.warm_steps, int):
@@ -156,14 +183,17 @@ class VILMWithSteering(nn.Module):
             raise ValueError(
                 f"the warm_steps should be int or float, but got {type(self.module_cfg.warm_steps)}"
             )
+        
+        print("WARM STEPS: ", warm_steps)
         scheduler = get_cosine_schedule_with_warmup(
             optimizer, num_warmup_steps=warm_steps, num_training_steps=step_batches
         )
-        return {
-            "optimizer": optimizer,
-            "lr_scheduler": {"scheduler": scheduler, "interval": "step"},
-        }
+        # return {
+        #     "optimizer": optimizer,
+        #     "lr_scheduler": {"scheduler": scheduler, "interval": "step"},
+        # }
 
+        return [optimizer, scheduler]
 
 @hydra.main(config_path="config", config_name="train.yaml")
 def main(cfg: DictConfig):
@@ -174,17 +204,23 @@ def main(cfg: DictConfig):
     result_dir = Path(cfg.result_dir)
     model_name = cfg.lmm.model_name
 
-    training_args = GRPOConfig(per_device_train_batch_size=cfg.per_device_train_batch_size, num_train_epochs=cfg.nepochs, learning_rate=5e-7)
 
-    save_grpo_dir = result_dir / "icv_cpk_grpo.pth"
+    save_grpo_dir = result_dir / "icv_cpk_grpo"
+    
+    save_grpo_dir = Path(save_grpo_dir)
+    if (save_grpo_dir / "icv_cpk.bin").exists():
+        logger.info(f"{str(save_grpo_dir / 'icv_cpk.bin')} exists! overwriting...")
+        # return
+        
 
-    wb_logger = WandbLogger(
-        save_dir=cfg.result_dir,
-        name=cfg.run_name,
-        project="VQAInContextVectorOuter",
-        log_model=False,
-    )
-    wb_logger.log_hyperparams(dict(cfg))
+    training_args = GRPOConfig(num_generations=cfg.n_actions ,per_device_train_batch_size=cfg.per_device_train_batch_size, num_train_epochs=cfg.nepochs, learning_rate=1e-9, report_to="wandb")
+
+    # wb_logger = WandbLogger(
+    #     save_dir=cfg.result_dir,
+    #     name=cfg.run_name,
+    #     project="VQAInContextVectorOuterGRPO",
+    # )
+    # wb_logger.log_hyperparams(dict(cfg))
     prompt_manager, interface, processor = init_interface(cfg)
 
     # model = VQAICVModuleOuter(
@@ -216,7 +252,9 @@ def main(cfg: DictConfig):
     # put this model through GRPO trainer
     trainer_cls = Qwen2VLGRPOTrainer
 
-    reward_funcs = [accuracy_reward]
+    # reward_funcs = [accuracy_reward, get_cosine_scaled_reward(max_len=cfg.generate_kwargs.max_new_tokens)]
+    # reward_funcs = [accuracy_reward, short_response_reward]
+    reward_funcs = [get_cosine_scaled_reward(max_len=cfg.generate_kwargs.max_new_tokens)]
 
     trainer = trainer_cls(
         model=combined_model,
@@ -232,16 +270,45 @@ def main(cfg: DictConfig):
         min_pixels=cfg.min_pixels,
         model_name=cfg.model_name,
         optimizers=optimizers,
-        # callbacks=[GradientLoggingCallback()],
-        logger=wb_logger,
+        # logger=wb_logger,
     )
 
     trainer.train()
 
+    # Get the icv_encoder from the model and save it. to avoid shared_tensors, try a copy
+
+    # Detach the icv_encoder (or any other part that shares memory)
+    
+
     # save the model
-    torch.save(combined_model.state_dict(), save_grpo_dir)
+    torch.save(combined_model.state_dict(), save_grpo_dir / "icv_cpk.bin")
+    print("Model saved at ", save_grpo_dir / "icv_cpk.bin")
 
 
+
+@rank_zero_only
+def postprocess(cfg, save_path):
+    # TODO: Save layer map
+    save_path = Path(save_path)
+    if "deepspeed" in cfg.trainer.strategy:
+        cpk_save_path = save_path / "last.ckpt"
+        output_file = save_path / "lightning_module.bin"
+        convert_zero_checkpoint_to_fp32_state_dict(cpk_save_path, output_file)
+
+        checkpoint = torch.load(output_file)
+        params_name = list(checkpoint["state_dict"].keys())
+        for name in params_name:
+            if "lmm" in name or "interface.model" in name:
+                checkpoint["state_dict"].pop(name)
+        checkpoint["state_dict"]["use_sigmoid"] = getattr(
+            cfg.icv_module.icv_encoder, "use_sigmoid", None
+        )
+        checkpoint["state_dict"]["lmm_args"] = checkpoint["hyper_parameters"]["lmm_cfg"]
+        torch.save(checkpoint["state_dict"], save_path / "icv_cpk.pth")
+        os.remove(output_file)
+        shutil.rmtree(
+            cpk_save_path,
+        )
 
 
 def accuracy_reward(completions, solution, **kwargs):
@@ -249,9 +316,11 @@ def accuracy_reward(completions, solution, **kwargs):
     contents = [completion for completion in completions]
     # process completions
     contents = postprocess_completions(contents)
-    # print("Completion: ", contents)
-    # print("Solution: ", solution)
-    # print("+++++")
+
+    print("Completion: ", contents)
+    print("Solution: ", solution)
+    print("+++++")
+
     rewards = []
     current_time = datetime.now().strftime("%d-%H-%M-%S-%f")
     for content, sol in zip(contents, solution):
@@ -293,11 +362,92 @@ def accuracy_reward(completions, solution, **kwargs):
 
 # def format_reward(completions, **kwargs):
 #     """Reward function that checks if the completion has a specific format."""
-#     pattern = r"<think>.*?</think>\s*<answer>.*?</answer>"
+#     pattern = r"<answer>.*?</answer>"
 #     completion_contents = [completion[0]["content"] for completion in completions]
 #     matches = [re.match(pattern, content) for content in completion_contents]
 #     return [1.0 if match else 0.0 for match in matches]
 
+
+def short_response_reward(
+        completions, solution, **kwargs
+):
+    contents = [completion for completion in completions]
+    # process completions
+    contents = postprocess_completions(contents)
+
+    # the answer should be as short as possible, no matter if it is correct or not
+    rewards = []
+    for content in contents:
+        # Check if the content is empty
+        if len(content) == 0:
+            rewards.append(0.0)
+            continue
+
+        # Calculate the length of the content
+        # get the length by splitting by space
+        content_length = len(content.split())
+        
+        # Calculate the reward based on the length
+        reward = 1.0 / content_length
+        rewards.append(float(reward))
+        
+    return rewards
+
+
+def get_cosine_scaled_reward(
+    min_value_wrong: float = -1.0,
+    max_value_wrong: float = -0.5,
+    min_value_correct: float = 0.5,
+    max_value_correct: float = 1.0,
+    max_len: int = 1000,
+):
+    def cosine_scaled_reward(completions, solution, **kwargs):
+        """Reward function that scales based on completion length using a cosine schedule.
+
+        Shorter correct solutions are rewarded more than longer ones.
+        Longer incorrect solutions are penalized less than shorter ones.
+
+        Args:
+            completions: List of model completions
+            solution: List of ground truth solutions
+
+        This function is parameterized by the following arguments:
+            min_value_wrong: Minimum reward for wrong answers
+            max_value_wrong: Maximum reward for wrong answers
+            min_value_correct: Minimum reward for correct answers
+            max_value_correct: Maximum reward for correct answers
+            max_len: Maximum length for scaling
+        """
+        responses = [completion for completion in completions]
+        extracted_responses = [postprocess_completions(r) for r in responses]
+        rewards = []
+
+        for content, exanswer, sol in zip(responses, extracted_responses, solution):
+            
+            is_correct = False
+            if exanswer==sol:
+                is_correct = True
+            gen_len = len(content)
+
+            # Apply cosine scaling based on length
+            progress = gen_len / max_len
+            cosine = math.cos(progress * math.pi)
+
+            if is_correct:
+                min_value = min_value_correct
+                max_value = max_value_correct
+            else:
+                # Swap min/max for incorrect answers
+                min_value = max_value_wrong
+                max_value = min_value_wrong
+
+            reward = min_value + 0.5 * (max_value - min_value) * (1.0 + cosine)
+            rewards.append(float(reward))
+            # print("Cosine scaled reward: ", reward)
+
+        return rewards
+
+    return cosine_scaled_reward
 
 
 if __name__ == "__main__":

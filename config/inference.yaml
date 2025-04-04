@@ -6,9 +6,6 @@ defaults:
   - icv_module: icv_module
 
 
-seed: 426
-
-
 test_icv: True
 test_icl: False
 bs: 1

@@ -19,6 +19,8 @@ class VQAICVModule(pl.LightningModule):
         interface: LMMInterface,
         module_cfg,
         lmm_cfg,
+        icv_cpk=None,
+        load_from_coldstart=False,
     ) -> None:
         super().__init__()
         self.save_hyperparameters(ignore=["interface"])
@@ -39,15 +41,15 @@ class VQAICVModule(pl.LightningModule):
         )
         # NOTE: Change the model in config/icv_module/icv_module.yaml
         icv_encoder_factor: GlobalICVEncoderOuter = hydra.utils.instantiate(
-            module_cfg.icv_encoder, _partial_=True
+            module_cfg.icv_encoder, _partial_=True, load_from_coldstart=True
         )
+        # icv_encoder_factor: GlobalICVEncoder = hydra.utils.instantiate(
+        #     module_cfg.icv_encoder, _partial_=True, load_from_coldstart=load_from_coldstart, icv_cpk=icv_cpk
+        # )
         icv_layer_num = len(self.icv_model.intervention_layer_names)
         hidden_dim = self.lmm_cfg.hidden_size
-        # self.icv_encoder = icv_encoder_factor(
-        #     lmm_hidden_dim=hidden_dim, lmm_layers=icv_layer_num
-        # )
         self.icv_encoder = icv_encoder_factor(
-            n_layers=icv_layer_num, hidden_dim=hidden_dim
+            hidden_dim=hidden_dim, n_layers=icv_layer_num
         )
         self.temperature = torch.nn.Parameter(
             torch.tensor(self.module_cfg.init_temperature),
@@ -89,11 +91,12 @@ class VQAICVModule(pl.LightningModule):
 
         icv_encoder_output = self.icv_encoder()
 
+        # push alpha and in_context_vector to the device of inputs
         icv = (
-            icv_encoder_output.alpha.unsqueeze(dim=-1)
-            * icv_encoder_output.in_context_vector
+            icv_encoder_output.alpha.unsqueeze(dim=-1).to(self.icv_model.device)
+            * icv_encoder_output.in_context_vector.to(self.icv_model.device)
         )
-        # print("ICV: ", icv)
+
 
         if self.module_cfg.hard_loss_weight:
             query_inputs["labels"] = query_inputs["input_ids"]

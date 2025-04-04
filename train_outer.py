@@ -25,18 +25,6 @@ from utils import get_icv_cpk_path, init_interface
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 from transformers import TrainerCallback
-class GradientLoggingCallback(pl.Callback):
-    def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx=None):
-        print(f"Batch {batch_idx} Gradient Logging")
-        for name, param in pl_module.named_parameters():
-            if param.requires_grad:
-                if param.grad is None:
-                    print(f"{name}: No gradient computed")
-                else:
-                    grad_norm = param.grad.data.norm(2).item()
-                    print(f"{name}: grad norm = {grad_norm:.4f}")
-        print("+++++")
-
 
 
 @hydra.main(config_path="config", config_name="train.yaml")
@@ -70,8 +58,7 @@ def main(cfg: DictConfig):
         callbacks=[
             LearningRateMonitor(),
             RichModelSummary(max_depth=2),
-            # RichProgressBar(),
-            GradientLoggingCallback(),
+            RichProgressBar(),
         ],
         **cfg.trainer,
         enable_checkpointing=False,
@@ -79,7 +66,7 @@ def main(cfg: DictConfig):
     prompt_manager, interface, processor = init_interface(cfg)
 
     model = VQAICVModuleOuter(
-        interface=interface, module_cfg=cfg.icv_module, lmm_cfg=cfg.lmm
+        interface=interface, module_cfg=cfg.icv_module, lmm_cfg=cfg.lmm, load_from_coldstart=False, rank=8
     )
     data_module = VQAICVDataModule(
         data_cfg=cfg.data_cfg, prompt_manager=prompt_manager, prompt_processor=processor
@@ -89,15 +76,15 @@ def main(cfg: DictConfig):
         model,
         data_module,
     )
-    # trainer.save_checkpoint(
-    #     filepath=os.path.join(
-    #         save_path,
-    #         "last.ckpt",
-    #     ),
-    #     weights_only=True,
-    # )
-    # print("SAVED MODEL")
-    # postprocess(cfg, save_path)
+    trainer.save_checkpoint(
+        filepath=os.path.join(
+            save_path,
+            "last.ckpt",
+        ),
+        weights_only=True,
+    )
+    print("SAVED MODEL at ", save_path)
+    postprocess(cfg, save_path)
 
 
 
